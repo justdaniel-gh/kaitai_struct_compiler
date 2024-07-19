@@ -532,8 +532,14 @@ class CSharpCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
   override def enumDeclaration(curClass: String, enumName: String, enumColl: Seq[(Long, String)]): Unit = {
     val enumClass = type2class(enumName)
 
+    // Are there any values > MaxInt?
+    val is_uint = !enumColl.iterator.forall { case (id, label) => id <= Int.MaxValue }
+
     out.puts
-    out.puts(s"public enum $enumClass")
+    is_uint match {
+      case true => out.puts(s"public enum $enumClass : uint")
+      case false => out.puts(s"public enum $enumClass")
+    }
     out.puts(s"{")
     out.inc
 
