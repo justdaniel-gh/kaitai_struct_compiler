@@ -9,7 +9,7 @@ import io.kaitai.struct.languages.RubyCompiler
 class RubyTranslator(provider: TypeProvider) extends BaseTranslator(provider)
   with ByteArraysAsTrueArrays[String] {
   override def doByteArrayLiteral(arr: Seq[Byte]): String =
-    s"${super.doByteArrayLiteral(arr)}.pack('C*')"
+    s"[${arr.map(_ & 0xff).mkString(", ")}].pack('C*')"
   override def doByteArrayNonLiteral(elts: Seq[Ast.expr]): String =
     s"[${elts.map(translate).mkString(", ")}].pack('C*')"
 
@@ -121,7 +121,7 @@ class RubyTranslator(provider: TypeProvider) extends BaseTranslator(provider)
   override def strReverse(s: Ast.expr): String =
     s"${translate(s, METHOD_PRECEDENCE)}.reverse"
   override def strSubstring(s: Ast.expr, from: Ast.expr, to: Ast.expr): String =
-    s"${translate(s, METHOD_PRECEDENCE)}[${translate(from)}..${genericBinOp(to, Ast.operator.Sub, Ast.expr.IntNum(1), 0)}]"
+    s"${translate(s, METHOD_PRECEDENCE)}[${translate(from)}...${translate(to)}]"
 
   override def arrayFirst(a: Ast.expr): String =
     s"${translate(a, METHOD_PRECEDENCE)}.first"

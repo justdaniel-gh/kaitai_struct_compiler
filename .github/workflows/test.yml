@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        java: [ '8', '11', '17' ]
+        java: [ '8', '11', '17', '21' ]
     defaults:
       run:
         working-directory: compiler
@@ -29,5 +29,6 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: ${{ matrix.java }}
+      - uses: sbt/setup-sbt@v1
       - name: Run tests
         run: sbt test

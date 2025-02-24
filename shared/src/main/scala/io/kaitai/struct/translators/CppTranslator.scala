@@ -113,12 +113,23 @@ class CppTranslator(provider: TypeProvider, importListSrc: CppImportList, import
         // TODO: C++14
       }
     } else {
-      throw new RuntimeException("C++ literal arrays are not implemented yet")
+      throw new RuntimeException("literal arrays are not yet implemented for C++98 (pass `--cpp-standard 11` to target C++11)")
     }
   }
 
   override def doByteArrayLiteral(arr: Seq[Byte]): String =
     "std::string(\"" + Utils.hexEscapeByteArray(arr) + "\", " + arr.length + ")"
+  override def doByteArrayNonLiteral(values: Seq[Ast.expr]): String = {
+    // It is assumed that every expression produces integer in the range [0; 255]
+    if (config.cppConfig.useListInitializers) {
+      "std::string({" + values.map(value => s"static_cast<char>(${translate(value)})").mkString(", ") + "})"
+    } else {
+      // TODO: We need to produce an expression, but this is only possible using
+      // initializer lists or variadic templates (if we use a helper function),
+      // both of which are only available since C++11
+      throw new RuntimeException("non-literal byte arrays are not yet implemented for C++98 (pass `--cpp-standard 11` to target C++11)")
+    }
+  }
 
   override def genericBinOp(left: Ast.expr, op: Ast.operator, right: Ast.expr, extPrec: Int) = {
     (detectType(left), detectType(right), op) match {
@@ -195,18 +206,19 @@ class CppTranslator(provider: TypeProvider, importListSrc: CppImportList, import
     s"${translate(b, METHOD_PRECEDENCE)}.length()"
 
   override def bytesSubscript(container: Ast.expr, idx: Ast.expr): String =
-    s"${translate(container)}[${translate(idx)}]"
+    s"${translate(container, METHOD_PRECEDENCE)}.at(${translate(idx)})"
   override def bytesFirst(b: Ast.expr): String = {
+    val bStr = translate(b, METHOD_PRECEDENCE)
     config.cppConfig.stdStringFrontBack match {
-      case true => s"${translate(b)}.front()"
-      case false => s"${translate(b)}[0]"
+      case true => s"$bStr.front()"
+      case false => s"$bStr.at(0)"
     }
   }
   override def bytesLast(b: Ast.expr): String = {
     val bStr = translate(b, METHOD_PRECEDENCE)
     config.cppConfig.stdStringFrontBack match {
       case true => s"$bStr.back()"
-      case false => s"$bStr[$bStr.length() - 1]"
+      case false => s"$bStr.at($bStr.length() - 1)"
     }
   }
   override def bytesMin(b: Ast.expr): String =

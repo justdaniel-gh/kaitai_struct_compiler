@@ -363,7 +363,12 @@ class CSharpCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
       case _: BytesEosType =>
         s"$io.ReadBytesFull()"
       case BytesTerminatedType(terminator, include, consume, eosError, _) =>
-        s"$io.ReadBytesTerm($terminator, $include, $consume, $eosError)"
+        if (terminator.length == 1) {
+          val term = terminator.head & 0xff
+          s"$io.ReadBytesTerm($term, $include, $consume, $eosError)"
+        } else {
+          s"$io.ReadBytesTermMulti(${translator.doByteArrayLiteral(terminator)}, $include, $consume, $eosError)"
+        }
       case BitsType1(bitEndian) =>
         s"$io.ReadBitsInt${Utils.upperCamelCase(bitEndian.toSuffix)}(1) != 0"
       case BitsType(width: Int, bitEndian) =>
@@ -388,13 +393,19 @@ class CSharpCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     }
   }
 
-  override def bytesPadTermExpr(expr0: String, padRight: Option[Int], terminator: Option[Int], include: Boolean) = {
+  override def bytesPadTermExpr(expr0: String, padRight: Option[Int], terminator: Option[Seq[Byte]], include: Boolean) = {
     val expr1 = padRight match {
       case Some(padByte) => s"$kstreamName.BytesStripRight($expr0, $padByte)"
       case None => expr0
     }
     val expr2 = terminator match {
-      case Some(term) => s"$kstreamName.BytesTerminate($expr1, $term, $include)"
+      case Some(term) =>
+        if (term.length == 1) {
+          val t = term.head & 0xff
+          s"$kstreamName.BytesTerminate($expr1, $t, $include)"
+        } else {
+          s"$kstreamName.BytesTerminateMulti($expr1, ${translator.doByteArrayLiteral(term)}, $include)"
+        }
       case None => expr1
     }
     expr2
@@ -407,6 +418,21 @@ class CSharpCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
       id
     }
     out.puts(s"$expr._read();")
+  }
+
+  override def tryFinally(tryBlock: () => Unit, finallyBlock: () => Unit): Unit = {
+    out.puts("try")
+    out.puts("{")
+    out.inc
+    tryBlock()
+    out.dec
+    out.puts("}")
+    out.puts("finally")
+    out.puts("{")
+    out.inc
+    finallyBlock()
+    out.dec
+    out.puts("}")
   }
 
   override def switchRequiresIfs(onType: DataType): Boolean = onType match {
@@ -587,14 +613,35 @@ class CSharpCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
   override def ksErrorName(err: KSError): String = CSharpCompiler.ksErrorName(err)
 
   override def attrValidateExpr(
-    attrId: Identifier,
-    attrType: DataType,
+    attr: AttrLikeSpec,
     checkExpr: Ast.expr,
     err: KSError,
     errArgs: List[Ast.expr]
+  ): Unit =
+    attrValidate(s"!(${translator.translate(checkExpr)})", err, errArgs)
+
+  override def attrValidateInEnum(
+    attr: AttrLikeSpec,
+    et: EnumType,
+    valueExpr: Ast.expr,
+    err: ValidationNotInEnumError,
+    errArgs: List[Ast.expr]
   ): Unit = {
+    // TODO: the non-generic overload `Enum.IsDefined(Type, object)` used here
+    // is supposedly slow because it uses reflection (see
+    // https://stackoverflow.com/q/13615#comment48178324_4807469). [This SO
+    // answer](https://stackoverflow.com/a/55028274) suggests to use the generic
+    // overload `Enum.IsDefined<TEnum>(TEnum)` instead, claiming that it fixes
+    // the performance issues. But it's only available since .NET 5, so we would
+    // need a command-line switch to allow the user to choose whether they need
+    // compabitility with older versions or not.
+    importList.add("System")
+    attrValidate(s"!Enum.IsDefined(typeof(${kaitaiType2NativeType(et)}), ${translator.translate(valueExpr)})", err, errArgs)
+  }
+
+  private def attrValidate(failCondExpr: String, err: KSError, errArgs: List[Ast.expr]): Unit = {
     val errArgsStr = errArgs.map(translator.translate).mkString(", ")
-    out.puts(s"if (!(${translator.translate(checkExpr)}))")
+    out.puts(s"if ($failCondExpr)")
     out.puts("{")
     out.inc
     out.puts(s"throw new ${ksErrorName(err)}($errArgsStr);")

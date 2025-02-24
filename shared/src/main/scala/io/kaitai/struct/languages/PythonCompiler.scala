@@ -357,7 +357,12 @@ class PythonCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
       case _: BytesEosType =>
         s"$io.read_bytes_full()"
       case BytesTerminatedType(terminator, include, consume, eosError, _) =>
-        s"$io.read_bytes_term($terminator, ${bool2Py(include)}, ${bool2Py(consume)}, ${bool2Py(eosError)})"
+        if (terminator.length == 1) {
+          val term = terminator.head & 0xff
+          s"$io.read_bytes_term($term, ${bool2Py(include)}, ${bool2Py(consume)}, ${bool2Py(eosError)})"
+        } else {
+          s"$io.read_bytes_term_multi(${translator.doByteArrayLiteral(terminator)}, ${bool2Py(include)}, ${bool2Py(consume)}, ${bool2Py(eosError)})"
+        }
       case BitsType1(bitEndian) =>
         s"$io.read_bits_int_${bitEndian.toSuffix}(1) != 0"
       case BitsType(width: Int, bitEndian) =>
@@ -382,13 +387,19 @@ class PythonCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
     }
   }
 
-  override def bytesPadTermExpr(expr0: String, padRight: Option[Int], terminator: Option[Int], include: Boolean) = {
+  override def bytesPadTermExpr(expr0: String, padRight: Option[Int], terminator: Option[Seq[Byte]], include: Boolean) = {
     val expr1 = padRight match {
       case Some(padByte) => s"$kstreamName.bytes_strip_right($expr0, $padByte)"
       case None => expr0
     }
     val expr2 = terminator match {
-      case Some(term) => s"$kstreamName.bytes_terminate($expr1, $term, ${bool2Py(include)})"
+      case Some(term) =>
+        if (term.length == 1) {
+          val t = term.head & 0xff
+          s"$kstreamName.bytes_terminate($expr1, $t, ${bool2Py(include)})"
+        } else {
+          s"$kstreamName.bytes_terminate_multi($expr1, ${translator.doByteArrayLiteral(term)}, ${bool2Py(include)})"
+        }
       case None => expr1
     }
     expr2
@@ -396,6 +407,17 @@ class PythonCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
 
   override def userTypeDebugRead(id: String, dataType: DataType, assignType: DataType): Unit =
     out.puts(s"$id._read()")
+
+  override def tryFinally(tryBlock: () => Unit, finallyBlock: () => Unit): Unit = {
+    out.puts("try:")
+    out.inc
+    tryBlock()
+    out.dec
+    out.puts("finally:")
+    out.inc
+    finallyBlock()
+    out.dec
+  }
 
   override def switchStart(id: Identifier, on: Ast.expr): Unit = {}
   override def switchCaseStart(condition: Ast.expr): Unit = {}
@@ -487,14 +509,28 @@ class PythonCompiler(typeProvider: ClassTypeProvider, config: RuntimeConfig)
   override def ksErrorName(err: KSError): String = PythonCompiler.ksErrorName(err)
 
   override def attrValidateExpr(
-    attrId: Identifier,
-    attrType: DataType,
+    attr: AttrLikeSpec,
     checkExpr: Ast.expr,
     err: KSError,
     errArgs: List[Ast.expr]
+  ): Unit =
+    attrValidate(s"not ${translator.translate(checkExpr)}", err, errArgs)
+
+  override def attrValidateInEnum(
+    attr: AttrLikeSpec,
+    et: EnumType,
+    valueExpr: Ast.expr,
+    err: ValidationNotInEnumError,
+    errArgs: List[Ast.expr]
   ): Unit = {
+    val enumSpec = et.enumSpec.get
+    val enumRef = types2class(enumSpec.name, enumSpec.isExternal(typeProvider.nowClass))
+    attrValidate(s"not isinstance(${translator.translate(valueExpr)}, $enumRef)", err, errArgs)
+  }
+
+  private def attrValidate(failCondExpr: String, err: KSError, errArgs: List[Ast.expr]): Unit = {
     val errArgsStr = errArgs.map(translator.translate).mkString(", ")
-    out.puts(s"if not ${translator.translate(checkExpr)}:")
+    out.puts(s"if $failCondExpr:")
     out.inc
     out.puts(s"raise ${ksErrorName(err)}($errArgsStr)")
     out.dec
